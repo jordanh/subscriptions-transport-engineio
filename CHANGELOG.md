@@ -2,6 +2,7 @@
 
 ### vNEXT
 - fix shallow cloning on contexts which are classes
+- Support server-defined payload in GQL_CONNECTION_ACK message
 
 ### 0.9.5
 - docs(setup): Fix dead link to subscriptions-to-schema
