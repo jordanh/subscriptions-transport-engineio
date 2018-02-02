@@ -640,7 +640,7 @@ describe('Client', function () {
     });
   });
 
-  it.only('should handle correctly GQL_CONNECTION_ACK payload for onReconnected', (done) => {
+  it('should handle correctly GQL_CONNECTION_ACK payload for onReconnected', (done) => {
     wsServer.on('connection', (connection: any) => {
       connection.on('message', (message: any) => {
         connection.send(JSON.stringify({ type: MessageTypes.GQL_CONNECTION_ACK, payload: {appVersion: '1.0.0'} }));
