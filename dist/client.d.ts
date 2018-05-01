@@ -45,6 +45,7 @@ export interface ClientOptions {
 export declare class SubscriptionClient {
     client: any;
     operations: Operations;
+    private cancelKeepAlive;
     private url;
     private nextOperationId;
     private connectionParams;
@@ -59,12 +60,8 @@ export declare class SubscriptionClient {
     private lazy;
     private closedByUser;
     private wsImpl;
-    private wasKeepAliveReceived;
     private tryReconnectTimeoutId;
-    private checkConnectionIntervalId;
-    private maxConnectTimeoutId;
     private middlewares;
-    private maxConnectTimeGenerator;
     constructor(url: string, options?: ClientOptions, webSocketImpl?: any);
     readonly status: any;
     close(isForced?: boolean, closedByUser?: boolean): void;
@@ -78,11 +75,9 @@ export declare class SubscriptionClient {
     unsubscribeAll(): void;
     applyMiddlewares(options: OperationOptions): Promise<OperationOptions>;
     use(middlewares: Middleware[]): SubscriptionClient;
+    private keepAlive(timeout);
     private executeOperation(options, handler);
     private getObserver<T>(observerOrNext, error?, complete?);
-    private createMaxConnectTimeGenerator();
-    private clearCheckConnectionInterval();
-    private clearMaxConnectTimeout();
     private clearTryReconnectTimeout();
     private checkOperationOptions(options, handler);
     private buildMessage(id, type, payload);
@@ -92,8 +87,6 @@ export declare class SubscriptionClient {
     private generateOperationId();
     private tryReconnect();
     private flushUnsentMessagesQueue();
-    private checkConnection();
-    private checkMaxConnectTimeout();
     private connect();
     private processReceivedData(receivedData);
     private unsubscribe(opId);

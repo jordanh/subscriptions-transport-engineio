@@ -43,7 +43,6 @@ var SubscriptionClient = (function () {
         this.eventEmitter = new eventemitter3_1.EventEmitter();
         this.middlewares = [];
         this.client = null;
-        this.maxConnectTimeGenerator = this.createMaxConnectTimeGenerator();
         if (!this.lazy) {
             this.connect();
         }
@@ -64,8 +63,6 @@ var SubscriptionClient = (function () {
         if (this.client !== null) {
             this.closedByUser = closedByUser;
             if (isForced) {
-                this.clearCheckConnectionInterval();
-                this.clearMaxConnectTimeout();
                 this.clearTryReconnectTimeout();
                 this.unsubscribeAll();
                 this.sendMessage(undefined, message_types_1.default.GQL_CONNECTION_TERMINATE, null);
@@ -182,6 +179,18 @@ var SubscriptionClient = (function () {
         });
         return this;
     };
+    SubscriptionClient.prototype.keepAlive = function (timeout) {
+        var _this = this;
+        this.client.send(message_types_1.default.GQL_CONNECTION_KEEP_ALIVE);
+        if (this.cancelKeepAlive) {
+            clearInterval(this.cancelKeepAlive);
+        }
+        else {
+            this.cancelKeepAlive = setInterval(function () {
+                _this.close(false, true);
+            }, 2 * timeout);
+        }
+    };
     SubscriptionClient.prototype.executeOperation = function (options, handler) {
         var _this = this;
         if (this.client === null) {
@@ -212,27 +221,6 @@ var SubscriptionClient = (function () {
             };
         }
         return observerOrNext;
-    };
-    SubscriptionClient.prototype.createMaxConnectTimeGenerator = function () {
-        var minValue = 1000;
-        var maxValue = this.wsTimeout;
-        return new Backoff({
-            min: minValue,
-            max: maxValue,
-            factor: 1.2,
-        });
-    };
-    SubscriptionClient.prototype.clearCheckConnectionInterval = function () {
-        if (this.checkConnectionIntervalId) {
-            clearInterval(this.checkConnectionIntervalId);
-            this.checkConnectionIntervalId = null;
-        }
-    };
-    SubscriptionClient.prototype.clearMaxConnectTimeout = function () {
-        if (this.maxConnectTimeoutId) {
-            clearTimeout(this.maxConnectTimeoutId);
-            this.maxConnectTimeoutId = null;
-        }
     };
     SubscriptionClient.prototype.clearTryReconnectTimeout = function () {
         if (this.tryReconnectTimeoutId) {
@@ -332,46 +320,31 @@ var SubscriptionClient = (function () {
         });
         this.unsentMessagesQueue = [];
     };
-    SubscriptionClient.prototype.checkConnection = function () {
-        if (this.wasKeepAliveReceived) {
-            this.wasKeepAliveReceived = false;
-            return;
-        }
-        if (!this.reconnecting) {
-            this.close(false, true);
-        }
-    };
-    SubscriptionClient.prototype.checkMaxConnectTimeout = function () {
-        var _this = this;
-        this.clearMaxConnectTimeout();
-        this.maxConnectTimeoutId = setTimeout(function () {
-            if (_this.status !== _this.wsImpl.OPEN) {
-                _this.close(false, true);
-            }
-        }, this.maxConnectTimeGenerator.duration());
-    };
     SubscriptionClient.prototype.connect = function () {
         var _this = this;
         this.client = new this.wsImpl(this.url, protocol_1.GRAPHQL_WS);
-        this.checkMaxConnectTimeout();
+        this.client.onerror = function (e) {
+            if (_this.reconnecting) {
+                return;
+            }
+            _this.eventEmitter.emit('socketsDisabled', e.message);
+            _this.reconnect = false;
+        };
         this.client.onopen = function () {
-            _this.clearMaxConnectTimeout();
             _this.closedByUser = false;
             _this.eventEmitter.emit(_this.reconnecting ? 'reconnecting' : 'connecting');
-            var payload = typeof _this.connectionParams === 'function' ? _this.connectionParams() : _this.connectionParams;
-            _this.sendMessage(undefined, message_types_1.default.GQL_CONNECTION_INIT, payload);
             _this.flushUnsentMessagesQueue();
+        };
+        this.client.onmessage = function (_a) {
+            var data = _a.data;
+            _this.processReceivedData(data);
         };
         this.client.onclose = function () {
             if (!_this.closedByUser) {
                 _this.close(false, false);
             }
-        };
-        this.client.onerror = function () {
-        };
-        this.client.onmessage = function (_a) {
-            var data = _a.data;
-            _this.processReceivedData(data);
+            clearInterval(_this.cancelKeepAlive);
+            _this.cancelKeepAlive = undefined;
         };
     };
     SubscriptionClient.prototype.processReceivedData = function (receivedData) {
@@ -401,7 +374,6 @@ var SubscriptionClient = (function () {
                 this.eventEmitter.emit(this.reconnecting ? 'reconnected' : 'connected', parsedMessage.payload);
                 this.reconnecting = false;
                 this.backoff.reset();
-                this.maxConnectTimeGenerator.reset();
                 if (this.connectionCallback) {
                     this.connectionCallback();
                 }
@@ -420,16 +392,7 @@ var SubscriptionClient = (function () {
                 this.operations[opId].handler(null, parsedPayload);
                 break;
             case message_types_1.default.GQL_CONNECTION_KEEP_ALIVE:
-                var firstKA = typeof this.wasKeepAliveReceived === 'undefined';
-                this.wasKeepAliveReceived = true;
-                if (firstKA) {
-                    this.checkConnection();
-                }
-                if (this.checkConnectionIntervalId) {
-                    clearInterval(this.checkConnectionIntervalId);
-                    this.checkConnection();
-                }
-                this.checkConnectionIntervalId = setInterval(this.checkConnection.bind(this), this.wsTimeout);
+                this.keepAlive(this.wsTimeout);
                 break;
             default:
                 throw new Error('Invalid message type!');
