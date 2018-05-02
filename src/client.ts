@@ -484,6 +484,11 @@ export class SubscriptionClient {
     let parsedMessage: any;
     let opId: string;
 
+    if (receivedData === MessageTypes.GQL_CONNECTION_KEEP_ALIVE) {
+      this.keepAlive(this.wsTimeout);
+      return;
+    }
+
     try {
       parsedMessage = JSON.parse(receivedData);
       opId = parsedMessage.id;
@@ -533,10 +538,6 @@ export class SubscriptionClient {
         const parsedPayload = !parsedMessage.payload.errors ?
           parsedMessage.payload : {...parsedMessage.payload, errors: this.formatErrors(parsedMessage.payload.errors)};
         this.operations[opId].handler(null, parsedPayload);
-        break;
-
-      case MessageTypes.GQL_CONNECTION_KEEP_ALIVE:
-        this.keepAlive(this.wsTimeout);
         break;
 
       default:

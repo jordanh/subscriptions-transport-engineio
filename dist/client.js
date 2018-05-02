@@ -182,11 +182,11 @@ var SubscriptionClient = (function () {
     SubscriptionClient.prototype.keepAlive = function (timeout) {
         var _this = this;
         this.client.send(message_types_1.default.GQL_CONNECTION_KEEP_ALIVE);
-        if (this.cancelKeepAlive) {
-            clearInterval(this.cancelKeepAlive);
+        if (this.keepAliveIntervalId) {
+            clearInterval(this.keepAliveIntervalId);
         }
         else {
-            this.cancelKeepAlive = setInterval(function () {
+            this.keepAliveIntervalId = setInterval(function () {
                 _this.close(false, true);
             }, 2 * timeout);
         }
@@ -335,21 +335,25 @@ var SubscriptionClient = (function () {
             _this.eventEmitter.emit(_this.reconnecting ? 'reconnecting' : 'connecting');
             _this.flushUnsentMessagesQueue();
         };
-        this.client.onmessage = function (_a) {
-            var data = _a.data;
-            _this.processReceivedData(data);
-        };
         this.client.onclose = function () {
             if (!_this.closedByUser) {
                 _this.close(false, false);
             }
-            clearInterval(_this.cancelKeepAlive);
-            _this.cancelKeepAlive = undefined;
+            clearInterval(_this.keepAliveIntervalId);
+            _this.keepAliveIntervalId = undefined;
+        };
+        this.client.onmessage = function (_a) {
+            var data = _a.data;
+            _this.processReceivedData(data);
         };
     };
     SubscriptionClient.prototype.processReceivedData = function (receivedData) {
         var parsedMessage;
         var opId;
+        if (receivedData === message_types_1.default.GQL_CONNECTION_KEEP_ALIVE) {
+            this.keepAlive(this.wsTimeout);
+            return;
+        }
         try {
             parsedMessage = JSON.parse(receivedData);
             opId = parsedMessage.id;
@@ -390,9 +394,6 @@ var SubscriptionClient = (function () {
                 var parsedPayload = !parsedMessage.payload.errors ?
                     parsedMessage.payload : __assign({}, parsedMessage.payload, { errors: this.formatErrors(parsedMessage.payload.errors) });
                 this.operations[opId].handler(null, parsedPayload);
-                break;
-            case message_types_1.default.GQL_CONNECTION_KEEP_ALIVE:
-                this.keepAlive(this.wsTimeout);
                 break;
             default:
                 throw new Error('Invalid message type!');

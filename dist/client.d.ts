@@ -45,7 +45,6 @@ export interface ClientOptions {
 export declare class SubscriptionClient {
     client: any;
     operations: Operations;
-    private cancelKeepAlive;
     private url;
     private nextOperationId;
     private connectionParams;
@@ -61,6 +60,7 @@ export declare class SubscriptionClient {
     private closedByUser;
     private wsImpl;
     private tryReconnectTimeoutId;
+    private keepAliveIntervalId;
     private middlewares;
     constructor(url: string, options?: ClientOptions, webSocketImpl?: any);
     readonly status: any;
