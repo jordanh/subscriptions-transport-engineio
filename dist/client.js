@@ -9,7 +9,6 @@ var __assign = (this && this.__assign) || Object.assign || function(t) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 var _global = typeof global !== 'undefined' ? global : (typeof window !== 'undefined' ? window : {});
-var NativeWebSocket = _global.WebSocket || _global.MozWebSocket;
 var Backoff = require("backo2");
 var eventemitter3_1 = require("eventemitter3");
 var isString = require("lodash.isstring");
@@ -17,14 +16,19 @@ var isObject = require("lodash.isobject");
 var printer_1 = require("graphql/language/printer");
 var getOperationAST_1 = require("graphql/utilities/getOperationAST");
 var symbol_observable_1 = require("symbol-observable");
-var protocol_1 = require("./protocol");
 var defaults_1 = require("./defaults");
 var message_types_1 = require("./message-types");
+var CLOSED = 'closed';
+var CONNECTING = 'connecting';
+var OPEN = 'open';
 var SubscriptionClient = (function () {
-    function SubscriptionClient(url, options, webSocketImpl) {
+    function SubscriptionClient(url, options, engineIoImpl) {
         var _a = (options || {}), _b = _a.connectionCallback, connectionCallback = _b === void 0 ? undefined : _b, _c = _a.connectionParams, connectionParams = _c === void 0 ? {} : _c, _d = _a.timeout, timeout = _d === void 0 ? defaults_1.WS_TIMEOUT : _d, _e = _a.reconnect, reconnect = _e === void 0 ? false : _e, _f = _a.reconnectionAttempts, reconnectionAttempts = _f === void 0 ? Infinity : _f, _g = _a.lazy, lazy = _g === void 0 ? false : _g;
-        this.wsImpl = webSocketImpl || NativeWebSocket;
-        if (!this.wsImpl) {
+        this.eioImpl = engineIoImpl;
+        this.eioImpl.CLOSED = this.eioImpl.CLOSED || CLOSED;
+        this.eioImpl.CONNECTING = this.eioImpl.CONNECTING || CONNECTING;
+        this.eioImpl.OPEN = this.eioImpl.OPEN || OPEN;
+        if (!this.eioImpl) {
             throw new Error('Unable to find native implementation, or alternative implementation for WebSocket!');
         }
         this.connectionParams = connectionParams;
@@ -50,7 +54,7 @@ var SubscriptionClient = (function () {
     Object.defineProperty(SubscriptionClient.prototype, "status", {
         get: function () {
             if (this.client === null) {
-                return this.wsImpl.CLOSED;
+                return this.eioImpl.CLOSED;
             }
             return this.client.readyState;
         },
@@ -76,6 +80,7 @@ var SubscriptionClient = (function () {
         }
     };
     SubscriptionClient.prototype.request = function (request) {
+        var _a;
         var getObserver = this.getObserver.bind(this);
         var executeOperation = this.executeOperation.bind(this);
         var unsubscribe = this.unsubscribe.bind(this);
@@ -113,7 +118,6 @@ var SubscriptionClient = (function () {
                 };
             },
             _a;
-        var _a;
     };
     SubscriptionClient.prototype.on = function (eventName, callback, context) {
         var handler = this.eventEmitter.on(eventName, callback, context);
@@ -273,7 +277,7 @@ var SubscriptionClient = (function () {
     };
     SubscriptionClient.prototype.sendMessageRaw = function (message) {
         switch (this.status) {
-            case this.wsImpl.OPEN:
+            case this.eioImpl.OPEN:
                 var serializedMessage = JSON.stringify(message);
                 try {
                     JSON.parse(serializedMessage);
@@ -283,7 +287,7 @@ var SubscriptionClient = (function () {
                 }
                 this.client.send(serializedMessage);
                 break;
-            case this.wsImpl.CONNECTING:
+            case this.eioImpl.CONNECTING:
                 this.unsentMessagesQueue.push(message);
                 break;
             default:
@@ -322,30 +326,29 @@ var SubscriptionClient = (function () {
     };
     SubscriptionClient.prototype.connect = function () {
         var _this = this;
-        this.client = new this.wsImpl(this.url, protocol_1.GRAPHQL_WS);
-        this.client.onerror = function (e) {
+        this.client = new this.eioImpl(this.url);
+        this.client.on('error', function (e) {
             if (_this.reconnecting) {
                 return;
             }
             _this.eventEmitter.emit('socketsDisabled', e.message);
             _this.reconnect = false;
-        };
-        this.client.onopen = function () {
+        });
+        this.client.on('open', function () {
             _this.closedByUser = false;
             _this.eventEmitter.emit(_this.reconnecting ? 'reconnecting' : 'connecting');
             _this.flushUnsentMessagesQueue();
-        };
-        this.client.onclose = function () {
+        });
+        this.client.on('close', function () {
             if (!_this.closedByUser) {
                 _this.close(false, false);
             }
             clearInterval(_this.keepAliveIntervalId);
             _this.keepAliveIntervalId = undefined;
-        };
-        this.client.onmessage = function (_a) {
-            var data = _a.data;
+        });
+        this.client.on('message', function (data) {
             _this.processReceivedData(data);
-        };
+        });
     };
     SubscriptionClient.prototype.processReceivedData = function (receivedData) {
         var parsedMessage;

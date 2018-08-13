@@ -1,6 +1,5 @@
 declare let window: any;
 const _global = typeof global !== 'undefined' ? global : (typeof window !== 'undefined' ? window : {});
-const NativeWebSocket = _global.WebSocket || _global.MozWebSocket;
 
 import * as Backoff from 'backo2';
 import { EventEmitter, ListenerFn } from 'eventemitter3';
@@ -15,6 +14,10 @@ import $$observable from 'symbol-observable';
 import { GRAPHQL_WS } from './protocol';
 import { WS_TIMEOUT } from './defaults';
 import MessageTypes from './message-types';
+
+const CLOSED = 'closed';
+const CONNECTING = 'connecting';
+const OPEN = 'open';
 
 export interface Observer<T> {
   next?: (value: T) => void;
@@ -83,12 +86,12 @@ export class SubscriptionClient {
   private eventEmitter: EventEmitter;
   private lazy: boolean;
   private closedByUser: boolean;
-  private wsImpl: any;
+  private eioImpl: any;
   private tryReconnectTimeoutId: any;
   private keepAliveIntervalId: any;
   private middlewares: Middleware[];
 
-  constructor(url: string, options?: ClientOptions, webSocketImpl?: any) {
+  constructor(url: string, options?: ClientOptions, engineIoImpl?: any) {
     const {
       connectionCallback = undefined,
       connectionParams = {},
@@ -98,9 +101,15 @@ export class SubscriptionClient {
       lazy = false,
     } = (options || {});
 
-    this.wsImpl = webSocketImpl || NativeWebSocket;
+    this.eioImpl = engineIoImpl;
 
-    if (!this.wsImpl) {
+    // This is tremendously inelegant, and should be part of a formal interface
+    // but we're just seeing if the plumbing can work:
+    this.eioImpl.CLOSED = this.eioImpl.CLOSED || CLOSED;
+    this.eioImpl.CONNECTING = this.eioImpl.CONNECTING || CONNECTING;
+    this.eioImpl.OPEN = this.eioImpl.OPEN || OPEN;
+
+    if (!this.eioImpl) {
       throw new Error('Unable to find native implementation, or alternative implementation for WebSocket!');
     }
 
@@ -128,7 +137,7 @@ export class SubscriptionClient {
 
   public get status() {
     if (this.client === null) {
-      return this.wsImpl.CLOSED;
+      return this.eioImpl.CLOSED;
     }
 
     return this.client.readyState;
@@ -394,7 +403,7 @@ export class SubscriptionClient {
   // send message, or queue it if connection is not open
   private sendMessageRaw(message: Object) {
     switch (this.status) {
-      case this.wsImpl.OPEN:
+      case this.eioImpl.OPEN:
         let serializedMessage: string = JSON.stringify(message);
         try {
           JSON.parse(serializedMessage);
@@ -404,7 +413,7 @@ export class SubscriptionClient {
 
         this.client.send(serializedMessage);
         break;
-      case this.wsImpl.CONNECTING:
+      case this.eioImpl.CONNECTING:
         this.unsentMessagesQueue.push(message);
 
         break;
@@ -450,34 +459,34 @@ export class SubscriptionClient {
   }
 
   private connect() {
-    this.client = new this.wsImpl(this.url, GRAPHQL_WS);
+    this.client = new this.eioImpl(this.url);
 
-    this.client.onerror = (e: Error) => {
+    this.client.on('error', (e: Error) => {
       // if reconnecting, then websockets aren't blocked
       if (this.reconnecting) {
         return;
       }
       this.eventEmitter.emit('socketsDisabled', e.message);
       this.reconnect = false;
-    };
+    });
 
-    this.client.onopen = () => {
+    this.client.on('open', () => {
       this.closedByUser = false;
       this.eventEmitter.emit(this.reconnecting ? 'reconnecting' : 'connecting');
       this.flushUnsentMessagesQueue();
-    };
+    });
 
-    this.client.onclose = () => {
+    this.client.on('close', () => {
       if (!this.closedByUser) {
         this.close(false, false);
       }
       clearInterval(this.keepAliveIntervalId);
       this.keepAliveIntervalId = undefined;
-    };
+    });
 
-    this.client.onmessage = ({ data }: {data: any}) => {
+    this.client.on('message', (data: any) => {
       this.processReceivedData(data);
-    };
+    });
   }
 
   private processReceivedData(receivedData: any) {
