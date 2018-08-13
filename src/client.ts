@@ -84,12 +84,9 @@ export class SubscriptionClient {
   private lazy: boolean;
   private closedByUser: boolean;
   private wsImpl: any;
-  private wasKeepAliveReceived: boolean;
   private tryReconnectTimeoutId: any;
-  private checkConnectionIntervalId: any;
-  private maxConnectTimeoutId: any;
+  private keepAliveIntervalId: any;
   private middlewares: Middleware[];
-  private maxConnectTimeGenerator: any;
 
   constructor(url: string, options?: ClientOptions, webSocketImpl?: any) {
     const {
@@ -123,7 +120,6 @@ export class SubscriptionClient {
     this.eventEmitter = new EventEmitter();
     this.middlewares = [];
     this.client = null;
-    this.maxConnectTimeGenerator = this.createMaxConnectTimeGenerator();
 
     if (!this.lazy) {
       this.connect();
@@ -143,8 +139,6 @@ export class SubscriptionClient {
       this.closedByUser = closedByUser;
 
       if (isForced) {
-        this.clearCheckConnectionInterval();
-        this.clearMaxConnectTimeout();
         this.clearTryReconnectTimeout();
         this.unsubscribeAll();
         this.sendMessage(undefined, MessageTypes.GQL_CONNECTION_TERMINATE, null);
@@ -276,6 +270,17 @@ export class SubscriptionClient {
     return this;
   }
 
+  private keepAlive(timeout: number): void {
+    this.client.send(MessageTypes.GQL_CONNECTION_KEEP_ALIVE);
+    if (this.keepAliveIntervalId) {
+      clearInterval(this.keepAliveIntervalId);
+    } else {
+      this.keepAliveIntervalId = setInterval(() => {
+        this.close(false, true);
+      }, 2 * timeout);
+    }
+  }
+
   private executeOperation(options: OperationOptions, handler: (error: Error[], result?: any) => void): string {
     if (this.client === null) {
       this.connect();
@@ -315,31 +320,6 @@ export class SubscriptionClient {
 
     return observerOrNext;
   }
-
-  private createMaxConnectTimeGenerator() {
-    const minValue = 1000;
-    const maxValue = this.wsTimeout;
-
-    return new Backoff({
-      min: minValue,
-      max: maxValue,
-      factor: 1.2,
-    });
-  }
-
-  private clearCheckConnectionInterval() {
-    if (this.checkConnectionIntervalId) {
-      clearInterval(this.checkConnectionIntervalId);
-      this.checkConnectionIntervalId = null;
-    }
-  }
-
-  private clearMaxConnectTimeout() {
-    if (this.maxConnectTimeoutId) {
-      clearTimeout(this.maxConnectTimeoutId);
-      this.maxConnectTimeoutId = null;
-    }
-    }
 
   private clearTryReconnectTimeout() {
     if (this.tryReconnectTimeoutId) {
@@ -469,54 +449,30 @@ export class SubscriptionClient {
     this.unsentMessagesQueue = [];
   }
 
-  private checkConnection() {
-    if (this.wasKeepAliveReceived) {
-      this.wasKeepAliveReceived = false;
-      return;
-    }
-
-    if (!this.reconnecting) {
-      this.close(false, true);
-    }
-  }
-
-  private checkMaxConnectTimeout() {
-    this.clearMaxConnectTimeout();
-
-    // Max timeout trying to connect
-    this.maxConnectTimeoutId = setTimeout(() => {
-      if (this.status !== this.wsImpl.OPEN) {
-        this.close(false, true);
-      }
-    }, this.maxConnectTimeGenerator.duration());
-  }
-
   private connect() {
     this.client = new this.wsImpl(this.url, GRAPHQL_WS);
 
-    this.checkMaxConnectTimeout();
+    this.client.onerror = (e: Error) => {
+      // if reconnecting, then websockets aren't blocked
+      if (this.reconnecting) {
+        return;
+      }
+      this.eventEmitter.emit('socketsDisabled', e.message);
+      this.reconnect = false;
+    };
 
     this.client.onopen = () => {
-      this.clearMaxConnectTimeout();
       this.closedByUser = false;
       this.eventEmitter.emit(this.reconnecting ? 'reconnecting' : 'connecting');
-
-      const payload: ConnectionParams = typeof this.connectionParams === 'function' ? this.connectionParams() : this.connectionParams;
-
-      // Send CONNECTION_INIT message, no need to wait for connection to success (reduce roundtrips)
-      this.sendMessage(undefined, MessageTypes.GQL_CONNECTION_INIT, payload);
       this.flushUnsentMessagesQueue();
     };
 
     this.client.onclose = () => {
-      if ( !this.closedByUser ) {
+      if (!this.closedByUser) {
         this.close(false, false);
       }
-    };
-
-    this.client.onerror = () => {
-      // Capture and ignore errors to prevent unhandled exceptions, wait for
-      // onclose to fire before attempting a reconnect.
+      clearInterval(this.keepAliveIntervalId);
+      this.keepAliveIntervalId = undefined;
     };
 
     this.client.onmessage = ({ data }: {data: any}) => {
@@ -527,6 +483,11 @@ export class SubscriptionClient {
   private processReceivedData(receivedData: any) {
     let parsedMessage: any;
     let opId: string;
+
+    if (receivedData === MessageTypes.GQL_CONNECTION_KEEP_ALIVE) {
+      this.keepAlive(this.wsTimeout);
+      return;
+    }
 
     try {
       parsedMessage = JSON.parse(receivedData);
@@ -557,7 +518,6 @@ export class SubscriptionClient {
         this.eventEmitter.emit(this.reconnecting ? 'reconnected' : 'connected', parsedMessage.payload);
         this.reconnecting = false;
         this.backoff.reset();
-        this.maxConnectTimeGenerator.reset();
 
         if (this.connectionCallback) {
           this.connectionCallback();
@@ -578,21 +538,6 @@ export class SubscriptionClient {
         const parsedPayload = !parsedMessage.payload.errors ?
           parsedMessage.payload : {...parsedMessage.payload, errors: this.formatErrors(parsedMessage.payload.errors)};
         this.operations[opId].handler(null, parsedPayload);
-        break;
-
-      case MessageTypes.GQL_CONNECTION_KEEP_ALIVE:
-        const firstKA = typeof this.wasKeepAliveReceived === 'undefined';
-        this.wasKeepAliveReceived = true;
-
-        if (firstKA) {
-          this.checkConnection();
-        }
-
-        if (this.checkConnectionIntervalId) {
-          clearInterval(this.checkConnectionIntervalId);
-          this.checkConnection();
-        }
-        this.checkConnectionIntervalId = setInterval(this.checkConnection.bind(this), this.wsTimeout);
         break;
 
       default:
